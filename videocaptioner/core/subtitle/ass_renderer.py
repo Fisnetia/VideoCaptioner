@@ -251,6 +251,7 @@ def render_ass_video(
     preset: str = "medium",
     progress_callback: Optional[Callable] = None,
     reference_height: int = 720,
+    pre_filter: Optional[str] = None,
 ) -> None:
     """
     渲染 ASS 样式字幕到视频（硬字幕）
@@ -265,6 +266,7 @@ def render_ass_video(
         preset: FFmpeg 编码预设
         progress_callback: 进度回调 (progress: str, message: str) -> None
         reference_height: 参考高度（固定720P）
+        pre_filter: 烧录字幕前先应用的 FFmpeg 滤镜（单输入单输出）
     """
     # 检查字幕数据是否为空
     if not asr_data or not asr_data.segments:
@@ -310,6 +312,8 @@ def render_ass_video(
 
         # 统一使用 ass 滤镜
         vf = f"ass='{subtitle_path_escaped}':fontsdir='{fonts_dir_escaped}'"
+        if pre_filter:
+            vf = f"{pre_filter},{vf}"
 
         # 检查 CUDA 是否可用
         use_cuda = _check_cuda_available()

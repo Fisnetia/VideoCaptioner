@@ -8,7 +8,7 @@ from typing import Literal, Optional
 from videocaptioner.cli import exit_codes as EXIT
 from videocaptioner.cli import output
 from videocaptioner.cli.config import get
-from videocaptioner.cli.validators import validate_synthesize
+from videocaptioner.cli.validators import validate_burned_subs, validate_synthesize
 from videocaptioner.core.subtitle.style_manager import (
     StyleMode,
     SubtitleStyle,
@@ -36,8 +36,12 @@ _QUALITY_MAP: dict[str, tuple[int, EncodePreset]] = {
     "low": (32, "fast"),
 }
 
-def _resolve_style(config: dict, verbose: bool) -> tuple:
+def _resolve_style(
+    config: dict, verbose: bool, margin_bottom: Optional[int] = None
+) -> tuple:
     """Resolve style settings from config.
+
+    margin_bottom is used unless --style-override sets its own margin.
 
     Returns (render_mode, ass_style_str, rounded_style_dict, font_file, style_obj).
     """
@@ -81,6 +85,9 @@ def _resolve_style(config: dict, verbose: bool) -> tuple:
     elif render_mode == "ass" and style.mode == StyleMode.ROUNDED:
         output.warn(f"'{style.name}' is a rounded preset. Switching to default ASS style.")
         style = load_style("default", mode="ass") or style
+
+    if margin_bottom is not None:
+        override_dict.setdefault("margin_bottom", margin_bottom)
 
     # Apply --style-override on top of base style
     if override_dict:
@@ -170,6 +177,8 @@ def run(args: Namespace, config: dict) -> int:
 
     if not validate_synthesize(config):
         return EXIT.DEPENDENCY_MISSING
+    if not validate_burned_subs(config):
+        return EXIT.USAGE_ERROR
 
     subtitle_mode = get(config, "synthesize.subtitle_mode", "soft")
     quality = get(config, "synthesize.quality", "medium")
@@ -227,7 +236,11 @@ def run(args: Namespace, config: dict) -> int:
             )
         else:
             # Hard subtitle: resolve style and render
-            resolved = _resolve_style(config, verbose)
+            burned_plan = _plan_burned_subs(config, str(video_path), quiet)
+            margin_bottom = burned_plan.margin_bottom if burned_plan else None
+            pre_filter = burned_plan.pre_filter if burned_plan else None
+
+            resolved = _resolve_style(config, verbose, margin_bottom)
             mode, ass_style, rounded_style, font_file, _ = resolved
             if mode is None:
                 if progress:
@@ -251,6 +264,7 @@ def run(args: Namespace, config: dict) -> int:
                     crf=crf,
                     preset=preset,
                     progress_callback=progress_callback,
+                    pre_filter=pre_filter,
                 )
             else:
                 from videocaptioner.core.asr.asr_data import ASRData
@@ -270,6 +284,7 @@ def run(args: Namespace, config: dict) -> int:
                     crf=crf,
                     preset=preset,
                     progress_callback=progress_callback,
+                    pre_filter=pre_filter,
                 )
 
         if progress:
@@ -288,6 +303,31 @@ def run(args: Namespace, config: dict) -> int:
             import traceback
             traceback.print_exc()
         return EXIT.RUNTIME_ERROR
+
+
+def _plan_burned_subs(config: dict, video_path: str, quiet: bool):
+    """Decide how to treat burned-in subtitles, and report what was found."""
+    from videocaptioner.core.subtitle.burned_subs import (
+        ACTION_NONE,
+        REGION_AUTO,
+        plan_burned_subs,
+    )
+
+    action = get(config, "synthesize.burned_subs_action", ACTION_NONE)
+    if action == ACTION_NONE:
+        return None
+    region_spec = get(config, "synthesize.burned_subs_region", REGION_AUTO)
+    plan = plan_burned_subs(video_path, action, region_spec)
+    if plan is None:
+        output.warn("No burned-in subtitles detected; the picture is left unchanged.")
+        output.hint("If that is wrong, set the area with --burned-subs-region x,y,w,h")
+    elif not quiet:
+        region = plan.region
+        output.info(
+            f"Burned-in subtitles at x={region.x} y={region.y} "
+            f"w={region.width} h={region.height} ({action})"
+        )
+    return plan
 
 
 def _register_font(font_file: str) -> None:

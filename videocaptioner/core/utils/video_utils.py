@@ -36,6 +36,10 @@ PresetType = Literal[
 
 logger = setup_logger("video_utils")
 
+TEXT_SUBTITLE_CODECS = frozenset(
+    {"ass", "mov_text", "srt", "ssa", "subrip", "text", "webvtt"}
+)
+
 
 @contextmanager
 def temporary_subtitle_file(subtitle_path: str):
@@ -170,6 +174,42 @@ def check_cuda_available() -> bool:
         return False
 
 
+def _list_subtitle_codecs(input_file: str) -> list[str]:
+    """Return the codec of each subtitle stream in a file, in stream order."""
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", input_file],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        ),
+    )
+    return re.findall(r"Stream #\d+:\d+.*?: Subtitle: (\w+)", result.stderr)
+
+
+def _soft_subtitle_stream_args(input_file: str) -> list[str]:
+    """Build the -map options that embed a new subtitle track as the default.
+
+    Without explicit mapping FFmpeg keeps only one subtitle stream, and it picks
+    the input video's own track over the new file. Existing text tracks are kept
+    after the new one. Image tracks are dropped because mov_text cannot hold them.
+    """
+    args = ["-map", "0:V", "-map", "0:a?", "-map", "1:0"]
+    kept = 0
+    for index, codec in enumerate(_list_subtitle_codecs(input_file)):
+        if codec not in TEXT_SUBTITLE_CODECS:
+            logger.warning(f"Dropping image subtitle track {index} ({codec})")
+            continue
+        args.extend(["-map", f"0:s:{index}"])
+        kept += 1
+    args.extend(["-disposition:s:0", "default"])
+    for track in range(1, kept + 1):
+        args.extend([f"-disposition:s:{track}", "0"])
+    return args
+
+
 def add_subtitles(
     input_file: str,
     subtitle_file: str,
@@ -214,6 +254,7 @@ def add_subtitles(
                 input_file,
                 "-i",
                 processed_subtitle,
+                *_soft_subtitle_stream_args(input_file),
                 "-c:v",
                 "copy",
                 "-c:a",

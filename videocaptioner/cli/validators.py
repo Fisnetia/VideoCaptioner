@@ -251,6 +251,37 @@ def validate_dubbing(config: dict, *, needs_video: bool = False, rewrite: bool =
     return True
 
 
+def validate_burned_subs(config: dict) -> bool:
+    """Validate the options for existing burned-in subtitles."""
+    from videocaptioner.core.subtitle.burned_subs import (
+        ACTION_NONE,
+        ACTIONS,
+        REGION_AUTO,
+        parse_region_values,
+    )
+
+    action = get(config, "synthesize.burned_subs_action", ACTION_NONE)
+    if action not in ACTIONS:
+        output.error(f"Unknown burned subtitle action: {action}")
+        output.hint(f"Choose one of: {', '.join(ACTIONS)}")
+        return False
+    if action == ACTION_NONE:
+        return True
+    if get(config, "synthesize.subtitle_mode", "soft") != "hard":
+        output.error(f"--burned-subs {action} needs --subtitle-mode hard")
+        output.hint("Soft subtitles cannot change the video's picture.")
+        return False
+    region = get(config, "synthesize.burned_subs_region", REGION_AUTO)
+    if region != REGION_AUTO:
+        try:
+            parse_region_values(region)
+        except ValueError as e:
+            output.error(str(e))
+            output.hint("Example: --burned-subs-region 0,0.82,1,0.14")
+            return False
+    return True
+
+
 def validate_process(config: dict, no_synthesize: bool = False) -> bool:
     """Validate config for full process command."""
     if not validate_transcribe(config):
@@ -258,5 +289,7 @@ def validate_process(config: dict, no_synthesize: bool = False) -> bool:
     if not validate_subtitle(config):
         return False
     if not no_synthesize and not validate_ffmpeg():
+        return False
+    if not no_synthesize and not validate_burned_subs(config):
         return False
     return True

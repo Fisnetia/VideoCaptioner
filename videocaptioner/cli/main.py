@@ -61,6 +61,30 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_burned_subs_options(parser: argparse.ArgumentParser) -> None:
+    """Add options for subtitles already burned into the video's frames."""
+    grp = parser.add_argument_group(
+        "Burned-in subtitles (--subtitle-mode hard only)",
+        description="Keep new subtitles from overlapping text that is already part of the picture.",
+    )
+    grp.add_argument(
+        "--burned-subs",
+        dest="burned_subs_action",
+        choices=["none", "blur", "box", "avoid"],
+        help="How to treat existing burned-in subtitles (default: none)\n"
+             "  none:  Leave them alone\n"
+             "  blur:  Blur them and put new subtitles over the blurred area\n"
+             "  box:   Cover them with a black box and put new subtitles on it\n"
+             "  avoid: Keep them and place new subtitles above them",
+    )
+    grp.add_argument(
+        "--burned-subs-region",
+        metavar="REGION",
+        help="Where they are: 'auto' to detect (default), or 'x,y,w,h' "
+             "as pixels or as 0-1 fractions of the frame",
+    )
+
+
 def _add_style_options(parser: argparse.ArgumentParser) -> None:
     """Add subtitle style options (for hard subtitle mode)."""
     grp = parser.add_argument_group(
@@ -88,6 +112,7 @@ def _add_style_options(parser: argparse.ArgumentParser) -> None:
         help='Inline JSON to override style fields, e.g. \'{"outline_color": "#ff0000", "font_size": 48}\'. '
              "Run 'videocaptioner style' to see available fields.",
     )
+    _add_burned_subs_options(parser)
     grp.add_argument("--font-file", metavar="PATH", help="Custom font file (.ttf/.otf), overrides style font")
 
 
@@ -584,6 +609,8 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     _set("synthesize.quality", getattr(args, "quality", None))
     _set("synthesize.layout", getattr(args, "layout", None))
     _set("synthesize.render_mode", getattr(args, "render_mode", None))
+    _set("synthesize.burned_subs_action", getattr(args, "burned_subs_action", None))
+    _set("synthesize.burned_subs_region", getattr(args, "burned_subs_region", None))
     _set("synthesize.style", getattr(args, "style", None))
     _set("synthesize.style_override", getattr(args, "style_override", None))
     _set("synthesize.font_file", getattr(args, "font_file", None))
