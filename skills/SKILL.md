@@ -142,7 +142,9 @@ videocaptioner synthesize video.mp4 -s subtitle.srt --subtitle-mode hard \
   --burned-subs box --burned-subs-region 0,0.82,1,0.14 -o output.mp4
 ```
 
-Detection finds text that changes over time, so fixed logos and titles are left alone. If nothing is found, the command warns and leaves the picture unchanged. Check a frame of the result.
+Detection finds text that changes over time, so fixed logos and titles are left alone. `blur` and `box` apply only while text is found in the area. Scanning for that reads the whole video, so long videos take longer. If nothing is found, the command warns and leaves the picture unchanged. Check a frame of the result.
+
+Faint or semi-transparent text can be missed by the scan. Add `--burned-subs-timing always` to mask the area for the whole video.
 
 ## Command reference
 

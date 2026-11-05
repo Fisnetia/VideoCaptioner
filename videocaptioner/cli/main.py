@@ -83,6 +83,13 @@ def _add_burned_subs_options(parser: argparse.ArgumentParser) -> None:
         help="Where they are: 'auto' to detect (default), or 'x,y,w,h' "
              "as pixels or as 0-1 fractions of the frame",
     )
+    grp.add_argument(
+        "--burned-subs-timing",
+        choices=["detected", "always"],
+        help="When blur or box applies (default: detected)\n"
+             "  detected: Only while text is found in the area\n"
+             "  always:   For the whole video, for faint text the scan misses",
+    )
 
 
 def _add_style_options(parser: argparse.ArgumentParser) -> None:
@@ -611,6 +618,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     _set("synthesize.render_mode", getattr(args, "render_mode", None))
     _set("synthesize.burned_subs_action", getattr(args, "burned_subs_action", None))
     _set("synthesize.burned_subs_region", getattr(args, "burned_subs_region", None))
+    _set("synthesize.burned_subs_timing", getattr(args, "burned_subs_timing", None))
     _set("synthesize.style", getattr(args, "style", None))
     _set("synthesize.style_override", getattr(args, "style_override", None))
     _set("synthesize.font_file", getattr(args, "font_file", None))
