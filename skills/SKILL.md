@@ -30,7 +30,7 @@ AI-powered video captioning: transcribe speech → optimize subtitles → transl
 ### 1. Give a Chinese video English subtitles (one command, all free)
 
 ```bash
-videocaptioner process video.mp4 --asr bijian --translator bing --target-language en \
+videocaptioner process video.mp4 --asr bijian --translator bing --to en \
   --subtitle-mode hard --quality high -o output.mp4
 ```
 
@@ -61,15 +61,15 @@ videocaptioner subtitle input.srt --translator llm --target-language en --reflec
 
 ```bash
 # Anime-style subtitles (warm color + orange outline), high quality video
-videocaptioner process video.mp4 --asr bijian --translator bing --target-language ja \
+videocaptioner process video.mp4 --asr bijian --translator bing --to ja \
   --subtitle-mode hard --style anime --quality high -o output_ja.mp4
 
 # Modern rounded background subtitles
-videocaptioner process video.mp4 --asr bijian --translator google --target-language ko \
+videocaptioner process video.mp4 --asr bijian --translator google --to ko \
   --subtitle-mode hard --render-mode rounded -o output_ko.mp4
 
 # Custom colors: white text with red outline, ultra quality
-videocaptioner process video.mp4 --asr bijian --translator bing --target-language en \
+videocaptioner process video.mp4 --asr bijian --translator bing --to en \
   --subtitle-mode hard --quality ultra \
   --style-override '{"outline_color": "#ff0000", "primary_color": "#ffffff"}' -o output_en.mp4
 ```
@@ -77,7 +77,7 @@ videocaptioner process video.mp4 --asr bijian --translator bing --target-languag
 ### 5. Subtitle only, output as ASS format (no video synthesis)
 
 ```bash
-videocaptioner process video.mp4 --asr bijian --translator bing --target-language en \
+videocaptioner process video.mp4 --asr bijian --translator bing --to en \
   --format ass --no-synthesize -o ./output/
 ```
 
@@ -98,7 +98,7 @@ videocaptioner synthesize video.mp4 -s video_en.srt --subtitle-mode hard \
 ### 7. Process audio file (auto-skips video synthesis)
 
 ```bash
-videocaptioner process podcast.mp3 --asr bijian --translator bing --target-language en -o ./output/
+videocaptioner process podcast.mp3 --asr bijian --translator bing --to en -o ./output/
 ```
 
 ### 8. Transcribe other languages (whisper-api)
@@ -121,6 +121,28 @@ videocaptioner synthesize video.mp4 -s subtitle.srt --subtitle-mode hard \
   --style-override '{"text_color": "#ffffff", "bg_color": "#000000cc", "corner_radius": 10, "font_size": 36}' \
   --font-file ./NotoSansSC.ttf --quality high -o styled_video.mp4
 ```
+
+### 11. Video already has subtitles in the picture
+
+New subtitles land on top of text that is burned into the frames. Choose how to handle it with `--burned-subs` (hard subtitles only):
+
+```bash
+# Detect the old subtitles, blur them, and put the new ones on the blurred area
+videocaptioner process video.mp4 --asr bijian --translator llm --to zh-Hans \
+  --subtitle-mode hard --burned-subs blur -o output.mp4
+
+# Cover them with a black box
+videocaptioner synthesize video.mp4 -s subtitle.srt --subtitle-mode hard --burned-subs box -o output.mp4
+
+# Keep them and place the new subtitles above them
+videocaptioner synthesize video.mp4 -s subtitle.srt --subtitle-mode hard --burned-subs avoid -o output.mp4
+
+# Detection missed them: give the area as x,y,w,h, in pixels or 0-1 fractions
+videocaptioner synthesize video.mp4 -s subtitle.srt --subtitle-mode hard \
+  --burned-subs box --burned-subs-region 0,0.82,1,0.14 -o output.mp4
+```
+
+Detection finds text that changes over time, so fixed logos and titles are left alone. If nothing is found, the command warns and leaves the picture unchanged. Check a frame of the result.
 
 ## Command reference
 

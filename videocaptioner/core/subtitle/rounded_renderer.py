@@ -275,6 +275,7 @@ def render_rounded_video(
     preset: str = "medium",
     progress_callback: Optional[Callable] = None,
     reference_height: int = 720,
+    pre_filter: Optional[str] = None,
 ) -> None:
     """
     渲染圆角背景字幕到视频（分批overlay方案）
@@ -292,6 +293,7 @@ def render_rounded_video(
         preset: FFmpeg编码预设
         progress_callback: 进度回调 (progress: int, message: str)
         reference_height: 参考高度（固定720P）
+        pre_filter: 叠加字幕前先应用的 FFmpeg 滤镜（单输入单输出），只在第一批执行
     """
     # 检查字幕数据
     if not asr_data or not asr_data.segments:
@@ -385,10 +387,14 @@ def render_rounded_video(
             # 构建overlay滤镜链
             input_args = ["-i", current_video]
             filter_parts = []
+            base_label = "[0:v]"
+            if pre_filter and batch_idx == 0:
+                filter_parts.append(f"[0:v]{pre_filter}[vc_masked]")
+                base_label = "[vc_masked]"
 
             for local_idx, (start, end, png_path) in enumerate(batch_frames):
                 input_args.extend(["-i", str(png_path)])
-                prev = f"[v{local_idx}]" if local_idx > 0 else "[0:v]"
+                prev = f"[v{local_idx}]" if local_idx > 0 else base_label
                 curr = f"[{local_idx + 1}:v]"
                 out = f"[v{local_idx + 1}]"
                 filter_parts.append(
