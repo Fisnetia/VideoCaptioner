@@ -14,9 +14,11 @@ from videocaptioner.core.subtitle.burned_subs import (
     ACTION_BLUR,
     ACTION_BOX,
     ACTION_NONE,
+    TIMING_ALWAYS,
     Region,
     build_mask_filter,
     detect_burned_subtitles,
+    find_active_ranges,
     find_subtitle_region,
     parse_region,
     parse_region_values,
@@ -184,6 +186,52 @@ class TestBuildMaskFilter:
         assert build_mask_filter(action, self.REGION) is None
 
 
+    def test_box_applies_only_in_active_ranges(self):
+        result = build_mask_filter(ACTION_BOX, self.REGION, [(1, 2), (5, 6.5)])
+        assert result.endswith(":enable='between(t,1.00,2.00)+between(t,5.00,6.50)'")
+
+    def test_blur_applies_only_in_active_ranges(self):
+        result = build_mask_filter(ACTION_BLUR, self.REGION, [(1, 2)])
+        assert result.endswith("overlay=100:900:enable='between(t,1.00,2.00)'")
+
+    def test_no_ranges_means_the_whole_video(self):
+        assert "enable" not in build_mask_filter(ACTION_BOX, self.REGION)
+
+
+class TestFindActiveRanges:
+    TEXT = 0.05
+    EMPTY = 0.0
+
+    def test_separate_lines_stay_separate(self):
+        densities = [self.TEXT] * 4 + [self.EMPTY] * 10 + [self.TEXT] * 4
+        assert find_active_ranges(densities, fps=2) == [(0.0, 2.5), (6.5, 9.5)]
+
+    def test_short_gaps_are_bridged(self):
+        densities = [self.TEXT] * 4 + [self.EMPTY] * 2 + [self.TEXT] * 4
+        assert find_active_ranges(densities, fps=2) == [(0.0, 5.5)]
+
+    def test_pads_both_sides(self):
+        densities = [self.EMPTY] * 10 + [self.TEXT] + [self.EMPTY] * 10
+        assert find_active_ranges(densities, fps=2) == [(4.5, 6.0)]
+
+    def test_nothing_to_hide(self):
+        assert find_active_ranges([self.EMPTY] * 20) == []
+
+    def test_empty_scan(self):
+        assert find_active_ranges([]) == []
+
+    def test_many_lines_merge_across_the_smallest_gaps(self):
+        densities = []
+        for index in range(1000):
+            densities += [self.TEXT] + [self.EMPTY] * (6 + index % 7)
+        ranges = find_active_ranges(densities, fps=2)
+        assert len(ranges) == 400
+        assert ranges[0][0] == 0.0
+        assert all(
+            first[1] < second[0] for first, second in zip(ranges, ranges[1:])
+        )
+
+
 class TestSubtitleMarginBottom:
     def test_mask_places_new_subtitles_inside_the_area(self):
         region = Region(0, 900, 1920, 120)
@@ -320,7 +368,31 @@ class TestWithFFmpeg:
 
     def test_manual_region_builds_a_plan(self, tmp_path):
         video = _make_video(tmp_path / "plain.mp4")
-        plan = plan_burned_subs(video, ACTION_BOX, "0,0.8,1,0.15")
+        plan = plan_burned_subs(video, ACTION_BOX, "0,0.8,1,0.15", TIMING_ALWAYS)
         assert plan.region == Region(0, 288, 640, 54)
         assert "drawbox" in plan.pre_filter
+        assert "enable" not in plan.pre_filter
+        assert plan.active_ranges is None
         assert plan.margin_bottom == 44
+
+    def test_scan_finds_when_text_is_on_screen(self, tmp_path):
+        video = _make_video(
+            tmp_path / "grid.mp4",
+            "drawgrid=w=12:h=12:t=2:c=white:enable='between(t,1,2)'",
+        )
+        plan = plan_burned_subs(video, ACTION_BOX, "0,0.8,1,0.15")
+        assert len(plan.active_ranges) == 1
+        start, end = plan.active_ranges[0]
+        assert 0.3 <= start <= 1.0
+        assert 2.0 <= end <= 3.0
+        assert "enable=" in plan.pre_filter
+
+    def test_manual_region_without_text_needs_no_mask(self, tmp_path):
+        video = _make_video(tmp_path / "plain.mp4")
+        assert plan_burned_subs(video, ACTION_BOX, "0,0.8,1,0.15") is None
+
+    def test_avoid_does_not_scan(self, tmp_path):
+        video = _make_video(tmp_path / "plain.mp4")
+        plan = plan_burned_subs(video, ACTION_AVOID, "0,0.8,1,0.15")
+        assert plan.pre_filter is None
+        assert plan.active_ranges is None

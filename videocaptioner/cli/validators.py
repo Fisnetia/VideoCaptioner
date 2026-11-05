@@ -257,6 +257,8 @@ def validate_burned_subs(config: dict) -> bool:
         ACTION_NONE,
         ACTIONS,
         REGION_AUTO,
+        TIMING_DETECTED,
+        TIMINGS,
         parse_region_values,
     )
 
@@ -270,6 +272,11 @@ def validate_burned_subs(config: dict) -> bool:
     if get(config, "synthesize.subtitle_mode", "soft") != "hard":
         output.error(f"--burned-subs {action} needs --subtitle-mode hard")
         output.hint("Soft subtitles cannot change the video's picture.")
+        return False
+    timing = get(config, "synthesize.burned_subs_timing", TIMING_DETECTED)
+    if timing not in TIMINGS:
+        output.error(f"Unknown burned subtitle timing: {timing}")
+        output.hint(f"Choose one of: {', '.join(TIMINGS)}")
         return False
     region = get(config, "synthesize.burned_subs_region", REGION_AUTO)
     if region != REGION_AUTO:

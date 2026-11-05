@@ -310,6 +310,7 @@ def _plan_burned_subs(config: dict, video_path: str, quiet: bool):
     from videocaptioner.core.subtitle.burned_subs import (
         ACTION_NONE,
         REGION_AUTO,
+        TIMING_DETECTED,
         plan_burned_subs,
     )
 
@@ -317,16 +318,26 @@ def _plan_burned_subs(config: dict, video_path: str, quiet: bool):
     if action == ACTION_NONE:
         return None
     region_spec = get(config, "synthesize.burned_subs_region", REGION_AUTO)
-    plan = plan_burned_subs(video_path, action, region_spec)
+    timing = get(config, "synthesize.burned_subs_timing", TIMING_DETECTED)
+    plan = plan_burned_subs(video_path, action, region_spec, timing)
     if plan is None:
         output.warn("No burned-in subtitles detected; the picture is left unchanged.")
-        output.hint("If that is wrong, set the area with --burned-subs-region x,y,w,h")
+        output.hint(
+            "If that is wrong, set the area with --burned-subs-region x,y,w,h "
+            "and add --burned-subs-timing always"
+        )
     elif not quiet:
         region = plan.region
         output.info(
             f"Burned-in subtitles at x={region.x} y={region.y} "
             f"w={region.width} h={region.height} ({action})"
         )
+        if plan.active_ranges:
+            seconds = sum(end - start for start, end in plan.active_ranges)
+            output.info(
+                f"Masking {len(plan.active_ranges)} time range(s), "
+                f"about {seconds:.0f}s in total"
+            )
     return plan
 
 

@@ -4,6 +4,9 @@ Detection needs no OCR or GPU. It samples frames across the video and looks for
 a horizontal band with dense edges that recurs in the same place while its
 contents change over the video. Static overlays such as logos keep the same
 edges in every sample, so they are rejected.
+
+Once the area is known, a second pass scans it through the whole video, so the
+mask is on only while there is text to hide.
 """
 
 import os
@@ -27,6 +30,12 @@ ACTIONS = (ACTION_NONE, ACTION_BLUR, ACTION_BOX, ACTION_AVOID)
 
 REGION_AUTO = "auto"
 
+TIMING_DETECTED = "detected"
+TIMING_ALWAYS = "always"
+TIMINGS = (TIMING_DETECTED, TIMING_ALWAYS)
+
+TimeRange = tuple[float, float]
+
 _SAMPLE_COUNT = 24
 _ANALYSIS_WIDTH = 640
 _EDGE_THRESHOLD = 70
@@ -45,6 +54,13 @@ _BOTTOM_SEARCH_START = 0.5
 _TOP_SEARCH_END = 0.2
 _AVOID_GAP_REFERENCE = 12
 _MASK_GAP_REFERENCE = 8
+_SCAN_FPS = 2
+_SCAN_EDGE_THRESHOLD = 150
+_MIN_ACTIVE_DENSITY = 0.005
+_ACTIVE_PAD_SECONDS = 0.5
+_ACTIVE_GAP_SECONDS = 1.0
+# Keeps the FFmpeg command within the Windows command line limit.
+_MAX_ACTIVE_RANGES = 400
 
 
 @dataclass(frozen=True)
@@ -78,6 +94,7 @@ class BurnedSubsPlan:
     region: Region
     pre_filter: Optional[str]
     margin_bottom: Optional[int]
+    active_ranges: Optional[tuple[TimeRange, ...]] = None
 
 
 def parse_region_values(spec: str) -> tuple[float, float, float, float]:
@@ -174,9 +191,11 @@ def find_subtitle_region(frames: Sequence[Image.Image]) -> Optional[FractionalRe
     return None
 
 
-def _edge_map(frame: Image.Image) -> Image.Image:
+def _edge_map(
+    frame: Image.Image, threshold: int = _EDGE_THRESHOLD
+) -> Image.Image:
     return frame.filter(ImageFilter.FIND_EDGES).point(
-        lambda value: 255 if value > _EDGE_THRESHOLD else 0
+        lambda value: 255 if value > threshold else 0
     )
 
 
@@ -343,6 +362,91 @@ def _sample_frames(
     return frames
 
 
+def _strong_edge_density(frame: Image.Image) -> float:
+    """Return the share of strong edges, which outlined text has and textures lack."""
+    width, height = frame.size
+    # FIND_EDGES leaves artefacts on the outermost pixels.
+    edges = _edge_map(frame, _SCAN_EDGE_THRESHOLD).crop(
+        (2, 2, width - 2, height - 2)
+    )
+    return ImageStat.Stat(edges).mean[0] / 255
+
+
+def _scan_text_density(
+    video_path: str, region: Region, video_width: int
+) -> list[float]:
+    """Measure a region's strong edges through the video at _SCAN_FPS."""
+    scale = _ANALYSIS_WIDTH / video_width
+    width = max(8, round(region.width * scale)) & ~1
+    height = max(8, round(region.height * scale)) & ~1
+    frame_size = width * height
+    process = subprocess.Popen(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            video_path,
+            "-an",
+            "-sn",
+            "-vf",
+            f"fps={_SCAN_FPS},"
+            f"crop={region.width}:{region.height}:{region.x}:{region.y},"
+            f"scale={width}:{height},format=gray",
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        creationflags=_no_window_flag(),
+    )
+    assert process.stdout is not None
+    densities = []
+    with process.stdout:
+        while len(data := process.stdout.read(frame_size)) == frame_size:
+            densities.append(
+                _strong_edge_density(Image.frombytes("L", (width, height), data))
+            )
+    if process.wait() != 0:
+        raise RuntimeError(f"FFmpeg could not scan the video: {video_path}")
+    return densities
+
+
+def find_active_ranges(
+    densities: Sequence[float], fps: float = _SCAN_FPS
+) -> list[TimeRange]:
+    """Turn per-sample text measurements into the time ranges to mask."""
+    ranges: list[list[float]] = []
+    for index, density in enumerate(densities):
+        if density < _MIN_ACTIVE_DENSITY:
+            continue
+        start = max(0.0, index / fps - _ACTIVE_PAD_SECONDS)
+        end = (index + 1) / fps + _ACTIVE_PAD_SECONDS
+        if ranges and start - ranges[-1][1] <= _ACTIVE_GAP_SECONDS:
+            ranges[-1][1] = end
+        else:
+            ranges.append([start, end])
+    return _limit_ranges([(start, end) for start, end in ranges])
+
+
+def _limit_ranges(
+    ranges: list[TimeRange], limit: int = _MAX_ACTIVE_RANGES
+) -> list[TimeRange]:
+    """Merge across the smallest gaps, so the mask errs towards staying on."""
+    if len(ranges) <= limit:
+        return ranges
+    gaps = [(ranges[i + 1][0] - ranges[i][1], i) for i in range(len(ranges) - 1)]
+    kept_gaps = {index for _, index in sorted(gaps, reverse=True)[: limit - 1]}
+    merged = [ranges[0]]
+    for index, current in enumerate(ranges[1:]):
+        if index in kept_gaps:
+            merged.append(current)
+        else:
+            merged[-1] = (merged[-1][0], current[1])
+    return merged
+
+
 def detect_burned_subtitles(video_path: str) -> Optional[Region]:
     """Return the area of a video's burned subtitles, if there are any."""
     info = _probe_video(video_path)
@@ -355,16 +459,32 @@ def detect_burned_subtitles(video_path: str) -> Optional[Region]:
     return _to_pixels(found, info.width, info.height)
 
 
-def build_mask_filter(action: str, region: Region) -> Optional[str]:
+def _enable_option(active_ranges: Optional[Sequence[TimeRange]]) -> str:
+    """Build the filter option that limits an effect to some time ranges."""
+    if active_ranges is None:
+        return ""
+    expression = "+".join(
+        f"between(t,{start:.2f},{end:.2f})" for start, end in active_ranges
+    )
+    return f":enable='{expression}'"
+
+
+def build_mask_filter(
+    action: str,
+    region: Region,
+    active_ranges: Optional[Sequence[TimeRange]] = None,
+) -> Optional[str]:
     """Build the FFmpeg filter that hides a region.
 
     The result has one video input and one video output, so it can lead both a
-    -vf chain and a -filter_complex graph.
+    -vf chain and a -filter_complex graph. With active_ranges, the region is
+    hidden only during those times. Without them it is hidden throughout.
     """
+    enable = _enable_option(active_ranges)
     if action == ACTION_BOX:
         return (
             f"drawbox=x={region.x}:y={region.y}:w={region.width}:h={region.height}"
-            ":color=black:t=fill"
+            f":color=black:t=fill{enable}"
         )
     if action == ACTION_BLUR:
         luma_radius = max(2, min(region.height, region.width) // 3)
@@ -375,7 +495,7 @@ def build_mask_filter(action: str, region: Region) -> Optional[str]:
             "format=yuv420p,split=2[vc_base][vc_mask];"
             f"[vc_mask]crop={region.width}:{region.height}:{region.x}:{region.y},"
             f"boxblur={luma_radius}:2:{chroma_radius}:2[vc_blur];"
-            f"[vc_base][vc_blur]overlay={region.x}:{region.y}"
+            f"[vc_base][vc_blur]overlay={region.x}:{region.y}{enable}"
         )
     return None
 
@@ -400,11 +520,14 @@ def subtitle_margin_bottom(
 
 
 def plan_burned_subs(
-    video_path: str, action: str, region_spec: str
+    video_path: str,
+    action: str,
+    region_spec: str,
+    timing: str = TIMING_DETECTED,
 ) -> Optional[BurnedSubsPlan]:
     """Work out how to treat a video's burned subtitles.
 
-    Returns None when the action is "none" or auto-detection finds nothing.
+    Returns None when the action is "none" or no text is found to hide.
     """
     if action == ACTION_NONE:
         return None
@@ -415,8 +538,17 @@ def plan_burned_subs(
             return None
     else:
         region = parse_region(region_spec, info.width, info.height)
+
+    active_ranges = None
+    if timing == TIMING_DETECTED and action in (ACTION_BLUR, ACTION_BOX):
+        densities = _scan_text_density(video_path, region, info.width)
+        active_ranges = tuple(find_active_ranges(densities))
+        if not active_ranges:
+            return None
+
     return BurnedSubsPlan(
         region=region,
-        pre_filter=build_mask_filter(action, region),
+        pre_filter=build_mask_filter(action, region, active_ranges),
         margin_bottom=subtitle_margin_bottom(action, region, info.height),
+        active_ranges=active_ranges,
     )

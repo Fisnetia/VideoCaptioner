@@ -111,6 +111,7 @@ DEFAULTS: Dict[str, Any] = {
         "render_mode": "ass",
         "burned_subs_action": "none",
         "burned_subs_region": "auto",
+        "burned_subs_timing": "detected",
         "style": "default",
     },
     "dubbing": {
